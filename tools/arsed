@@ -25,12 +25,14 @@ use HTTP::Request::Common;
 use URI::Escape qw(uri_escape);
 
 # For e-mail sending.
-use Email::Send::SMTP::Gmail;
-use Net::SMTPS;
+#use Email::Send::SMTP::Gmail;
+#use Net::SMTPS;
 # use Mail::Webmail::Gmail;
 
 # For Underground weather:
-use Weather::Underground;
+#use Weather::Underground;
+# For OpenWeatherMap
+use Weather::OpenWeatherMap;
 
 # For personal control.
 my $aprs_enable;
@@ -105,7 +107,7 @@ sub reverse_geocode($$)
         max_redirect => 0,
     );
     
-    my $url = "http://maps.googleapis.com/maps/api/geocode/json?latlng=$lat,$lng&sensor=true";
+    my $url = "https://maps.googleapis.com/maps/api/geocode/json?latlng=$lat,$lng&sensor=true&key=YOURKEYGOESHERE";
     
     my $req = HTTP::Request->new(GET => $url);
     my $res = $ua->simple_request($req);
@@ -195,13 +197,12 @@ sub push_updates()
             $ent->{'longitude'},
             -1, # speed
             -1, # course
-            -10000, # altitude
-            (defined $ent->{'symbol'}) ? $ent->{'symbol'} : '/[', # symbol
-            1, # compression
-            0); # no ambiguity
+            -10000, # altitude not used
+            (defined $ent->{'symbol'}) ? $ent->{'symbol'} : '/[' # symbol
+        );
         #print "$aprs_position\n";
 
-        my $packet = sprintf('%s>APTR01:!%s', $ent->{'callsign'}, $aprs_position);
+        my $packet = sprintf('%s>APTR01:%s', $ent->{'callsign'}, $aprs_position);
         #print "$packet\n";
 
 	if ($aprs_enable == 1){
@@ -256,7 +257,7 @@ sub consider_aprsis_beacon($)
             $reg->{'last_aprsis_lng'}, $reg->{'last_aprsis_lat'},
             $rx->{'longitude'}, $rx->{'latitude'});
         if ($dist < 0.05) {
-            if ($since_last < 15*60) {
+            if ($since_last < 5*60) {
                 return 0;
             }
             return do_aprsis_beacon($rx);
@@ -346,7 +347,7 @@ sub dump_state()
     );
     
     my $tmpf = $c->{'state_dump'} . '.tmp';
-    if (!open(F, ">$tmpf")) {
+    if (!open(F, ">", $tmpf)) {
         warn "$alert_me: could not open $tmpf for writing: $!\n";
         return;
     }
@@ -372,7 +373,7 @@ sub reload_state()
 {
     return if (!defined $c->{'state_dump'});
     
-    if (!open(F, $c->{'state_dump'})) {
+    if (!open(F, "<", $c->{'state_dump'})) {
         warn "$alert_me: could not open state dump " . $c->{'state_dump'} . " for reading: $!\n";
         return;
     }
@@ -393,7 +394,7 @@ sub reload_state()
             next;
         }
         warn "reload_state: reloading radio " . $radio->{'id'} . "\n";
-        for my $k ('last_poll_tx', 'last_poll_rx', 'first_heard', 'last_heard', 'away_reason', 'state', 'heard_what') {
+        for my $k ('last_poll_tx', 'last_poll_rx', 'first_heard', 'last_heard', 'away_reason', 'state', 'heard_what', 'btext') {
             $reg->{$radio->{'id'}}{$k} = $radio->{$k};
         }
     }
@@ -523,67 +524,27 @@ sub cmd_noaa($$)
     return if (!$is);
     my($cmd, @words) = @$args;
     my $msg = join(' ', @words);
+    # OpenWeatherMap:
+	my $owm_key = 'YOURAPIKEYGOESHERE';
+	my $wx = Weather::OpenWeatherMap->new(
+	    api_key => $owm_key,
+    );
+	my $owm_cur = $wx->get_weather(
+        location => $msg,
+	);
+	
+    my $w_t = $owm_cur->temp_f;
+    my $w_z = $owm_cur->wind_speed_mph.$owm_cur->wind_direction;
+    my $w_c = $owm_cur->conditions_terse;
+    my $w_d = $owm_cur->humidity;
+    #    my $w_f = $wun->feelslike_f;
 
-    # Wunderground:
-    my $key;
-    my $value;
-    my $weather = Weather::Underground->new(
-	    place => $msg,
-            debug => 0,
-        )
-        || warn "Error, could not create new weather object: $@\n";
-
-    my $arrayref = $weather->get_weather()
-        || warn "Error, calling get_weather() failed: $@\n";
-
-    my ($place, $temp_c, $humidity, $conditions, $wind_dir, $wind_kmph, $pressure, $updated, $clouds, $dew_point_c, $visibility_km);
-    
-    foreach (@$arrayref) {
-        print "MATCH:\n";
-        while (($key, $value) = each %{$_}) {
-            print "\t$key = $value\n";
-            if ($key eq 'place'  ){
-                $place =  $value;
-            };
-            if ($key eq 'temperature_celsius'  ){
-                $temp_c = $value;
-            };
-            if ($key eq 'humidity'  ){
-                $humidity = $value;
-            };
-            if ($key eq 'conditions'  ){
-                $conditions = $value;
-            };
-            if ($key eq 'wind_direction'  ){
-                $wind_dir = $value;
-            };
-            if ($key eq 'wind_kilometersperhour'  ){
-                $wind_kmph = $value;
-            };
-            if ($key eq 'pressure'  ){
-                $pressure = $value;
-            };
-            if ($key eq 'updated'  ){
-                $updated = $value;
-            };
-            if ($key eq 'clouds'  ){
-                $clouds = $value;
-            };
-            if ($key eq 'dewpoint_celcius'  ){
-                $dew_point_c = $value;
-            };
-            if ($key eq 'visibility_kilometers'  ){
-                $visibility_km = $value;
-            };
-        }
-    }
-    $msg = "$place at $updated Temp: $temp_c, wind: $wind_kmph kmph $wind_dir, Humidity: $humidity, Press: $pressure";
-    print "Message: " . $msg . "\n";
-
-    warn "NOAA report to radio: "
+    my $wmsg = "$w_c -- ".$w_t."F. Wind $w_z. Humidity ".$w_d;
+	
+    warn "WX report to radio: "
         . $rx->{'registry'}->{'callsign'} . '>'
-        . ": $msg\n";
-    $net->{'tms'}->queue_msg($rx->{'src_id'}, 'NOAA: ' . $msg);
+        . ": $wmsg\n";
+    $net->{'tms'}->queue_msg($rx->{'src_id'}, 'WX: ' . $wmsg);
 }
 
 ##############################################################################################
@@ -648,6 +609,47 @@ sub cmd_sms($$)
     }
     print "\n";
     #Bulk SMS block end.
+}
+
+#################
+###cmd_lastheard
+#################
+sub cmd_lastheard($$)
+{
+   my($rx, $args) = @_;
+   my($cmd, $dst) = @$args;
+   my $now = time();
+   my @matches;
+   my $match;
+   my $s;
+        foreach my $radio (values %{ $net->{'registry'} }) {
+            my $t = (defined $radio->{'callsign'}) ? $radio->{'callsign'} : $radio->{'id'};
+            if (index($radio->{'id'}, $dst) >= 0) {
+                $match = $radio;
+                push @matches, $t;
+                next;
+            }
+            if (defined $radio->{'callsign'} && index(uc($radio->{'callsign'}), uc($dst)) >= 0) {
+                $match = $radio;
+                push @matches, $t;
+                next;
+            }
+        }
+        if ($#matches > 0) {
+            $net->{'tms'}->queue_msg($rx->{'src_id'}, 'Multiple matches: ' . join(' ', @matches));
+            return;
+        }
+
+            if (defined $match->{'last_heard'}) {
+                $s = '' . join(' ', @matches);
+                $s .= ' Last Heard at ' . dur_str($now - $match->{'last_heard'});
+		$s .= '. Current Status: ' . $match->{'state'};
+            }
+	    else {
+		$s = "Haven't heard " . join(' ', @matches);
+	   }
+
+    $net->{'tms'}->queue_msg($rx->{'src_id'}, $s);
 }
 
 ##############################################################################################
@@ -779,24 +781,94 @@ sub send_help($)
 {
     my($id) = @_;
     
-    $net->{'tms'}->queue_msg($id, 'ARS-E Commands: APRS, email, NOAA, Ping SMS, Who');
+    $net->{'tms'}->queue_msg($id, 'ARS-E Commands: APRS, BText, Last, Sym, SSID, Who, WX');
+}
+
+######################
+###############
+#  cmd_btext
+###############
+######################
+sub cmd_btext($$)
+{
+    my($rx, $args) = @_;
+    my($cmd, @words) = @$args;
+
+    my $btext = join(' ', @words);
+    if (!defined $btext || ! @words || $btext eq '') {
+        $net->{'tms'}->queue_msg($rx->{'src_id'}, 'Current btext: ' . $rx->{'registry'}->{'btext'});
+        return;
+    } else {
+        $rx->{'registry'}->{'btext'} = $btext;
+	$net->{'tms'}->queue_msg($rx->{'src_id'}, 'Set btext to: ' . $btext);
+    }
+}
+######################
+###############
+#  cmd_aprssymbol
+###############
+######################
+sub cmd_aprssymbol($$)
+{
+    my($rx, $args) = @_;
+    my($cmd, @words) = @$args;
+
+    my $btext = join(' ', @words);
+    if (!defined $btext || ! @words || $btext eq '') {
+        $net->{'tms'}->queue_msg($rx->{'src_id'}, 'Current APRS symbol: ' . $rx->{'registry'}->{'symbol'});
+        return;
+    } else {
+        if (length($btext) eq 2) {
+            $rx->{'registry'}->{'symbol'} = $btext;
+            $net->{'tms'}->queue_msg($rx->{'src_id'}, 'Set APRS symbol to: ' . $btext);
+        } else {
+            $net->{'tms'}->queue_msg($rx->{'src_id'}, 'ERROR: invalid symbol length (not 2 characters)');
+        }
+    }
+}
+
+##################################
+##################################
+# set SSID
+##################################
+##################################
+sub cmd_ssid($$)
+{
+    my($rx, $args) = @_;
+    my($cmd, @words) = @$args;
+
+    my $ssid = join(' ', @words);
+    if (!defined $ssid || ! @words || $ssid eq '') {
+        $net->{'tms'}->queue_msg($rx->{'src_id'}, 'Current SSID: ' . $rx->{'registry'}->{'callsign'});
+    } else {
+	my ($ssid_1, $ssid_2) = split(/-/, $ssid);
+	$rx->{'registry'}->{'callsign'} = $ssid;
+	$rx->{'registry'}->{'short_callsign'} = $ssid_1;
+	$net->{'tms'}->queue_msg($rx->{'src_id'}, 'Set APRS SSID to: ' . $ssid);
+    }
+}
 }
 
 ##############################################################################################
 # Valid Commands
 ##############################################################################################
 my %cmds = (
-    'ctl' => \&cmd_ctl,
-    'getmail' => \&cmd_check_email,
-    'email' => \&cmd_email,
-    'e' => \&cmd_email,
-    'getsms' => \&cmd_get_sms,
-    'kill' => \&cmd_kill,
-    'noaa' => \&cmd_noaa,
-    'ping' => \&cmd_ping,
-    'sms' => \&cmd_sms,
+    'btext' => \&cmd_btext,
+#    'ctl' => \&cmd_ctl,
+#    'getmail' => \&cmd_check_email,
+#    'email' => \&cmd_email,
+#    'e' => \&cmd_email,
+    'last' => \&cmd_lastheard,
+#    'getsms' => \&cmd_get_sms,
+#    'kill' => \&cmd_kill,
+#    'noaa' => \&cmd_noaa,
+#    'ping' => \&cmd_ping,
+    #    'sms' => \&cmd_sms,
+    'ssid' => \&cmd_ssid,
+    'sym' => \&cmd_aprssymbol,
     'who' => \&cmd_who,
     'w' => \&cmd_who,
+    'wx' => \&cmd_noaa,
 );
 
 
@@ -855,7 +927,7 @@ sub spool_read($)
 {
     my($f) = @_;
     
-    if (!open(F, $f)) {
+    if (!open(F, "<", $f)) {
         warn "Could not open $f for reading: $!\n";
         return;
     }
@@ -1053,6 +1125,7 @@ while (1) {
                         'latitude' => $rx->{'latitude'},
                         'longitude' => $rx->{'longitude'},
                         'symbol'   => $rx->{'registry'}->{'symbol'},
+						'btext'    => $rx->{'registry'}->{'btext'},
                         'callsign' => $rx->{'registry'}->{'callsign'}
                     };
                 } else {
@@ -1060,6 +1133,7 @@ while (1) {
                         'latitude' => 19.380834,# Test Location.
                         'longitude' => -99.176753,# Test Location.
                         'symbol'   => $rx->{'registry'}->{'symbol'},
+						'btext'    => $rx->{'registry'}->{'btext'},
                         'callsign' => $rx->{'registry'}->{'callsign'}
                     };
                 }

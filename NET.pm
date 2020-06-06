@@ -194,6 +194,10 @@ sub configure_radio($$)
     my $radio = $self->add_radio($rx->{'id'});
     
     $radio->{'callsign'} = $rx->{'callsign'};
+    $radio->{'symbol'} = $rx->{'symbol'};
+    $radio->{'short_callsign'} = $rx->{'short_callsign'};
+    $radio->{'name'} = $rx->{'name'};
+    $radio->{'btext'} = $rx->{'btext'};
     $self->{'reg_call'}->{$rx->{'callsign'}} = $radio;
     
     return $radio;
